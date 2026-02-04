@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Executive Infrastructure Monitoring</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-textpath@1.2.3/leaflet.textpath.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        :root { --bg: #050a18; --card: #0b1426; --accent: #4cc9f0; --text: #ffffff; --road-glow: #ffffff; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        header { padding: 10px 25px; background: var(--card); border-bottom: 2px solid var(--accent); display: flex; justify-content: space-between; align-items: center; height: 60px; }
+        .location-brand { background: rgba(76, 201, 240, 0.1); border: 1px solid var(--accent); padding: 5px 15px; border-radius: 4px; color: var(--accent); font-weight: bold; font-size: 0.85rem; }
+        
+        .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 12px 12px 0 12px; }
+        .kpi-card { background: var(--card); padding: 15px; border-radius: 10px; border: 1px solid #1a263d; text-align: left; }
+        .kpi-label { font-size: 0.7rem; color: #8892b0; text-transform: uppercase; margin-bottom: 5px; letter-spacing: 1px; }
+        .kpi-value { font-size: 1.4rem; font-weight: bold; color: var(--accent); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .dashboard-grid { display: grid; grid-template-columns: 320px 1fr 280px; gap: 12px; padding: 12px; height: calc(100vh - 165px); }
+        .sidebar { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+        #map { flex: 1; border-radius: 15px; border: 1px solid #1f2b47; background: #000; position: relative; }
+        
+        /* TARGETING BASEMAP BRIGHTNESS ONLY */
+        .leaflet-tile-pane { filter: brightness(1.5); }
+
+        #corner-info { position: absolute; top: 20px; right: 20px; width: 240px; background: rgba(11, 20, 38, 0.95); border: 1px solid var(--accent); 
+                       border-radius: 8px; padding: 15px; z-index: 2000; pointer-events: none; display: none; box-shadow: 0 0 15px rgba(76, 201, 240, 0.4); }
+        #corner-info h5 { margin: 0 0 10px 0; color: var(--accent); text-transform: uppercase; font-size: 0.75rem; border-bottom: 1px solid #1a263d; padding-bottom: 8px; }
+        
+        .attr-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; color: #cbd5e0; }
+        .attr-table td { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .attr-label { color: var(--accent); font-weight: bold; width: 40%; text-transform: capitalize; }
+        .attr-value { text-align: right; color: #fff; }
+
+        .road-shining { filter: drop-shadow(0 0 6px var(--road-glow)); stroke-dasharray: none; }
+        .building-glow { filter: drop-shadow(0 0 4px currentColor); }
+        
+        .manhole-container { background: #ff9f00; border: 1px solid #000; display: flex; align-items: center; justify-content: center; }
+        .manhole-dot { width: 2px; height: 2px; background: #000; }
+
+        .widget { background: var(--card); border-radius: 12px; padding: 12px; border: 1px solid #1a263d; min-height: 100px; }
+        .chart-container { height: 120px; position: relative; }
+        h4 { margin: 0 0 10px 0; font-size: 0.85rem; color: var(--accent); text-transform: uppercase; border-left: 3px solid var(--accent); padding-left: 8px; }
+        .scroll-list { font-size: 0.85rem; max-height: 250px; overflow-y: auto; line-height: 1.6; color: #cbd5e0; }
+        .stat-item { display: flex; align-items: center; border-bottom: 1px solid #1a263d; padding: 6px 0; gap: 10px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+        .legend-icon { font-size: 14px; width: 12px; text-align: center; flex-shrink: 0; }
+        .val { color: var(--accent); font-weight: bold; }
+        button { background: var(--accent); color: #000; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; transition: 0.3s; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h2 style="margin:0;">Infrastructure Live Analytics</h2>
+    <div class="location-brand">AL KHOBAR, SAUDI ARABIA</div>
+    <button onclick="exportToExcel()">📥 Export Visible Report</button>
+</header>
+
+<div class="kpi-row">
+    <div class="kpi-card"><span class="kpi-label">Active Street Name</span><span id="active-street" class="kpi-value">---</span></div>
+    <div class="kpi-card"><span class="kpi-label">Avg Speed Limit</span><span id="top-speed" class="kpi-value">39 km/h</span></div>
+    <div class="kpi-card"><span class="kpi-label">Traffic Signals</span><span id="totalSignals" class="kpi-value">0</span></div>
+    <div class="kpi-card"><span class="kpi-label">Street Lights</span><span id="totalLights" class="kpi-value">0</span></div>
+</div>
+
+<div class="dashboard-grid">
+    <div class="sidebar">
+        <div class="widget"><h4>Sign Boards (By Type)</h4><div class="chart-container"><canvas id="chartSign"></canvas></div></div>
+        <div class="widget"><h4>Trees (Species)</h4><div class="chart-container"><canvas id="chartTree"></canvas></div></div>
+        <div class="widget"><h4>Manholes (By Type)</h4><div class="chart-container"><canvas id="chartManhole"></canvas></div></div>
+    </div>
+
+    <div id="map">
+        <div id="corner-info">
+            <h5>Building Details</h5>
+            <div id="info-content"></div>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <div class="widget"><h4>Road Name Registry</h4><div id="roadNames" class="scroll-list">Scanning...</div></div>
+        <div class="widget">
+            <h4>Map Legend</h4>
+            <div id="mapLegend" class="scroll-list">
+                <div class="stat-item"><div class="legend-color" style="background:#00008b"></div><span>Comm/Residential</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#ff8c00"></div><span>Commercial</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#5bc2f1"></div><span>Private Residential</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#ffff00"></div><span>Mosque</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#ff00ff"></div><span>Government</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#4caf50"></div><span>Public/General</span></div>
+                <div class="stat-item"><span class="legend-icon">🚦</span><span>Traffic Signal</span></div>
+                <div class="stat-item"><span class="legend-icon">💡</span><span>Street Light</span></div>
+                <div class="stat-item"><span class="legend-icon">🪧</span><span>Sign Board</span></div>
+                <div class="stat-item"><span class="legend-icon">🌳</span><span>Trees</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#ff9f00; border: 1px solid #000"></div><span>Manhole</span></div>
+                <div class="stat-item"><div class="legend-color" style="background:#ffffff; height: 5px;"></div><span>Road Centerline</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    var map = L.map('map', {
+        maxZoom: 22
+    }).setView([26.2949, 50.2065], 22); 
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 22,
+        maxNativeZoom: 20
+    }).addTo(map);
+
+    const icons = {
+        signal: L.divIcon({ html: '🚦', className: 'map-icon', iconSize: [20, 20] }),
+        light: L.divIcon({ html: '💡', className: 'map-icon', iconSize: [18, 18] }),
+        sign: L.divIcon({ html: '🪧', className: 'map-icon', iconSize: [18, 18] }),
+        manhole: L.divIcon({ 
+            html: '<div class="manhole-dot"></div>', 
+            className: 'manhole-container', 
+            iconSize: [8, 8] 
+        }),
+        tree: L.divIcon({ html: '🌳', className: 'map-icon', iconSize: [20, 20] }),
+        palm: L.divIcon({ html: '🌴', className: 'map-icon', iconSize: [22, 22] })
+    };
+
+    let layers = {};
+    const config = [
+        { id: "GIS_Sample_TrafficSignalP", name: "Signals", type: "P", iconKey: "signal" },
+        { id: "GIS_Sample_StreetLightingP", name: "Lights", type: "P", iconKey: "light" },
+        { id: "GIS_Sample_SignBoardP", name: "Signs", type: "P", iconKey: "sign" },
+        { id: "GIS_Sample_ManholeP", name: "Manholes", type: "P", iconKey: "manhole" },
+        { id: "GIS_Sample_TreeP", name: "Trees", type: "P" },
+        { id: "GIS_Sample_ParkingAreaA", name: "Parking", color: "#f39c12", type: "A" },
+        { id: "GIS_Sample_RoadCenterLineL", name: "Roads", color: "#ffffff", type: "L" },
+        { id: "GIS_Sample_BuildingA", name: "Buildings", type: "A" }
+    ];
+
+    const createChart = (id, type) => new Chart(document.getElementById(id), {
+        type: type,
+        data: { labels: [], datasets: [{ data: [], backgroundColor: ['#4cc9f0', '#2ecc71', '#ffeb3b', '#ff4d4d', '#e67e22'] }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: type === 'pie', labels: { color: '#fff', font: { size: 9 } } } }, scales: { x: { display: type !== 'pie', ticks: { color: '#fff', font: { size: 8 } } }, y: { display: type !== 'pie', ticks: { color: '#fff', font: { size: 8 } } } } }
+    });
+
+    const chartSign = createChart('chartSign', 'bar');
+    const chartTree = createChart('chartTree', 'pie');
+    const chartManhole = createChart('chartManhole', 'pie');
+
+    config.forEach(item => {
+        fetch(`geojson/${item.id}.geojson`).then(res => res.json()).then(data => {
+            layers[item.id] = L.geoJSON(data, {
+                style: (f) => {
+                    const p = f.properties;
+                    if (item.id.includes('BuildingA')) {
+                        let bColor = "#4cc9f0"; 
+                        const bName = (p.Name || p.name || "").toLowerCase();
+                        const bType = (p.Type || p.type || "").toLowerCase();
+                        if (bType === 'commercial/residential') bColor = "#00008b"; 
+                        else if (bType === 'commercial') bColor = "#ff8c00"; 
+                        else if (bName.includes('mosque')) bColor = "#ffff00"; 
+                        else if (bName.includes('private')) bColor = "#5bc2f1"; 
+                        else if (bType.includes('government')) bColor = "#ff00ff"; 
+                        else if (bName.includes('panda')) bColor = "#b03030"; 
+                        else if (bName.includes('restaur')) bColor = "#a37a4d"; 
+                        else if (bName.includes('riyadh bank')) bColor = "#a64d79"; 
+                        else if (bName.includes('royal al nasr')) bColor = "#3060b0"; 
+                        else if (bName.includes('shop')) bColor = "#1a237e"; 
+                        else if (bName.includes('unknown')) bColor = "#4caf50"; 
+                        else if (bName.includes('house of aziza')) bColor = "#795548"; 
+                        else if (bName.includes('playground')) bColor = "#9c27b0"; 
+                        return { color: bColor, weight: 2, fillOpacity: 0.6, className: 'building-glow' };
+                    }
+                    if (item.id.includes('ParkingAreaA')) return { color: "#f39c12", weight: 1, fillOpacity: 0.3, dashArray: '5, 5' };
+                    if (item.id.includes('RoadCenterLineL')) return { color: "#ffffff", weight: 5, opacity: 0.9, className: 'road-shining' };
+                    return { color: item.color || '#4cc9f0', weight: 2 };
+                },
+                pointToLayer: (f, l) => {
+                    let icon = icons[item.iconKey] || icons.tree;
+                    const treeType = f.properties.TreeType || f.properties.Tree_Type || f.properties.tree_type || "";
+                    if (item.id.includes('TreeP') && treeType === 'Palm Tree') icon = icons.palm;
+                    return L.marker(l, { icon: icon });
+                },
+                onEachFeature: (f, l) => {
+                    const p = f.properties;
+                    if (item.id.includes('BuildingA')) {
+                        l.bringToFront(); 
+                        l.on('mouseover', (e) => {
+                            const panel = document.getElementById('corner-info');
+                            const content = document.getElementById('info-content');
+                            const activeStreetVal = document.getElementById('active-street').innerText;
+                            panel.style.display = 'block';
+                            panel.style.borderColor = e.target.options.color;
+                            const bName = p.Name || p.name || "Private Block";
+                            const bRoad = p.Road_Name || p.road_name || activeStreetVal || "---";
+                            const bType = p.Type || p.type || p.fclass || "Building";
+                            content.innerHTML = `<table class="attr-table"><tr><td class="attr-label">Name:</td><td class="attr-value">${bName}</td></tr><tr><td class="attr-label">Type:</td><td class="attr-value">${bType}</td></tr><tr><td class="attr-label">Road Name:</td><td class="attr-value">${bRoad}</td></tr></table>`;
+                        });
+                        l.on('mouseout', () => document.getElementById('corner-info').style.display = 'none');
+                    }
+                    if (item.id.includes('RoadCenterLineL')) {
+                        const rName = (p.Road_Name || p.road_name || "").toUpperCase();
+                        if (rName && rName !== "UNKNOWN ROAD") {
+                            l.setText(rName, {
+                                repeat: false,
+                                center: true,
+                                offset: -10,
+                                orientation: 'flip',
+                                attributes: { 
+                                    fill: '#ffffff', 
+                                    'font-weight': 'bold', 
+                                    'font-size': '12px',
+                                    'text-shadow': '1px 1px 2px #000'
+                                }
+                            });
+                        }
+                    }
+                }
+            }).addTo(map);
+            updateDashboard();
+        });
+    });
+
+    function updateDashboard() {
+        const bounds = map.getBounds();
+        let s = { sig: 0, lgt: 0, signs: {}, trees: {}, manholes: {}, lgtRd: {}, roadNames: new Set(), speeds: [], nameFreq: {} };
+        Object.keys(layers).forEach(id => {
+            if (id.includes("RoadCenterLineL")) {
+                layers[id].eachLayer(l => {
+                    if (bounds.intersects(l.getBounds())) {
+                        const p = l.feature.properties;
+                        const rName = p.Road_Name || p.road_name || "Unknown Road";
+                        s.roadNames.add(rName);
+                        s.nameFreq[rName] = (s.nameFreq[rName] || 0) + 1;
+                        if (p.maxspeed || p.max_speed) s.speeds.push(parseInt(p.maxspeed || p.max_speed));
+                    }
+                });
+            }
+        });
+        const currentActiveStreet = Object.keys(s.nameFreq).reduce((a, b) => s.nameFreq[a] > s.nameFreq[b] ? a : b, "---");
+        Object.keys(layers).forEach(id => {
+            layers[id].eachLayer(l => {
+                const p = l.feature.properties;
+                const isVisible = (l.getLatLng) ? bounds.contains(l.getLatLng()) : bounds.intersects(l.getBounds());
+                if (isVisible) {
+                    const roadKey = p.Road_Name || p.road_name;
+                    const assetRoad = (roadKey && roadKey !== "Unknown Road") ? roadKey : currentActiveStreet;
+                    if (id.includes("TrafficSignal")) s.sig++;
+                    if (id.includes("StreetLighting")) { s.lgt++; s.lgtRd[assetRoad] = (s.lgtRd[assetRoad] || 0) + 1; }
+                    if (id.includes("SignBoard")) {
+                        const type = p.Type || p.type || "Misc";
+                        s.signs[type] = (s.signs[type] || 0) + 1;
+                    }
+                    if (id.includes("TreeP")) {
+                        const type = p.TreeType || p.Tree_Type || p.tree_type || "Normal";
+                        s.trees[type] = (s.trees[type] || 0) + 1;
+                    }
+                    if (id.includes("ManholeP")) {
+                        const type = p.Type || p.type || "Utility";
+                        s.manholes[type] = (s.manholes[type] || 0) + 1;
+                    }
+                }
+            });
+        });
+        document.getElementById('active-street').innerText = currentActiveStreet;
+        document.getElementById('top-speed').innerText = (s.speeds.length ? Math.round(s.speeds.reduce((a,b)=>a+b)/s.speeds.length) : 39) + " km/h";
+        document.getElementById('totalSignals').innerText = s.sig;
+        document.getElementById('totalLights').innerText = s.lgt;
+        let rdHTML = ""; s.roadNames.forEach(n => rdHTML += `<div class="stat-item">${n}</div>`);
+        document.getElementById('roadNames').innerHTML = rdHTML || "No roads in view";
+        const upd = (c, o) => { c.data.labels = Object.keys(o); c.data.datasets[0].data = Object.values(o); c.update(); };
+        upd(chartSign, s.signs); upd(chartTree, s.trees); upd(chartManhole, s.manholes);
+    }
+
+    function exportToExcel() {
+        let data = [];
+        Object.keys(layers).forEach(id => {
+            layers[id].eachLayer(l => {
+                const p = l.feature.properties;
+                const isVisible = (l.getLatLng) ? map.getBounds().contains(l.getLatLng()) : map.getBounds().intersects(l.getBounds());
+                if (isVisible) {
+                    data.push({ Layer: id, Road: p.Road_Name || p.road_name, Type: p.Type || p.type || p.fclass, Name: p.Name || p.name });
+                }
+            });
+        });
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Inventory");
+        XLSX.writeFile(wb, "Infrastructure_Analytics.xlsx");
+    }
+
+    map.on('moveend zoomend', updateDashboard);
+</script>
+</body>
+</html>
